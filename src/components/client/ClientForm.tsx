@@ -9,6 +9,7 @@ type ClientInfo = {
 
 const STEPS = ['Vos informations', 'Séjour souhaité', 'Envoi'];
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const SOURCES = ['Bouche-à-oreille', 'Recherche Google / Internet', 'Réseaux sociaux', 'Salon / événement', 'Déjà venu(e)', 'Magazine / presse', 'Autre'];
 
 declare global {
   interface Window { turnstile?: { render: (el: HTMLElement, opts: Record<string, unknown>) => string; reset: (id?: string) => void } }
@@ -30,7 +31,7 @@ export default function ClientForm({ formules, turnstileSiteKey }: { formules: s
   const [client, setClient] = useState<ClientInfo>({
     prenom: '', nom: '', email: '', telephone: '', regime: '', taille: '', moucheur: false, adresse: '', codePostal: '', ville: '', pays: '',
   });
-  const [sejour, setSejour] = useState({ debut: '', fin: '', formule: '', nbPecheurs: 1, nbAccompagnants: 0, attentes: '', vols: '' });
+  const [sejour, setSejour] = useState({ debut: '', fin: '', formule: '', nbPecheurs: 1, nbAccompagnants: 0, attentes: '', vols: '', source: '' });
   const [consent, setConsent] = useState(false);
   const [website, setWebsite] = useState('');
   const [token, setToken] = useState('');
@@ -168,6 +169,13 @@ export default function ClientForm({ formules, turnstileSiteKey }: { formules: s
           <label className="block sm:col-span-2">
             <span className="label">Vols (si déjà connus : aéroport, date, heure)</span>
             <textarea className="input min-h-16" maxLength={1000} value={sejour.vols} onChange={e => setS('vols')(e.target.value)} />
+          </label>
+          <label className="block sm:col-span-2">
+            <span className="label">Comment nous avez-vous connus ?</span>
+            <select className="input" value={sejour.source} onChange={e => setS('source')(e.target.value)}>
+              <option value="">—</option>
+              {SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
           </label>
         </div>
       )}

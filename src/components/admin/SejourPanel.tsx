@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
-  ASSOC, byId, clientName, createAssoc, euro, findAssoc, findCompta, findMateriel, first, frDate, ids, isActive, MAT,
-  materielLabel, num, overlaps, people, saveRecord, totalAcompte, txt, type AssocKind, type Data, type Rec, type Role,
+  ASSOC, action, byId, clientName, createAssoc, euro, findAssoc, findCompta, findMateriel, first, frDate, ids, isActive, MAT,
+  materielLabel, num, occupants, overlaps, people, saveRecord, totalAcompte, txt, type AssocKind, type Data, type Rec, type Role,
 } from './lib';
 import { ClientPicker, Field, Pill, Select, TextInput } from './ui';
 
@@ -65,6 +65,16 @@ export function SejourPanel({ data, sejourId, preset, onSaved, openSejour, openC
       };
       const rec = await saveRecord('Séjour', fields, sejourId || undefined);
       onSaved('Séjour', rec);
+      // Séjour créé depuis un prospect : le prospect passe en « Converti »
+      if (!sejourId && preset?._prospectId) {
+        try {
+          onSaved('Prospects', await saveRecord('Prospects', {
+            'Statut prospect': 'Converti', 'Séjour créé': rec.id, 'Traité par': data.user?.nom ?? '',
+          }, String(preset._prospectId)));
+        } catch (e) {
+          errors.push(`prospect : ${e instanceof Error ? e.message : 'erreur'}`);
+        }
+      }
 
       if (!sejourId) {
         // Création en une fois : compta + attributions choisies pour chaque personne
@@ -162,7 +172,7 @@ export function SejourPanel({ data, sejourId, preset, onSaved, openSejour, openC
           </div>
           {formPeople.length === 0 && <p className="text-sm text-slate-500">Ajoutez d’abord un chef de groupe et les participants.</p>}
           {formPeople.map(p => (
-            <PlanRow key={p.id} data={data} sejour={form} clientId={p.id} role={p.role} client={clientsById[p.id]}
+            <PlanRow key={p.id} data={data} sejour={form} clientId={p.id} role={p.role} client={clientsById[p.id]} allPlans={plan}
               value={plan[p.id] ?? emptyPlan()} onChange={v => setPlan(pl => ({ ...pl, [p.id]: v }))} />
           ))}
           <label className="flex items-center gap-2 text-sm">
@@ -175,6 +185,8 @@ export function SejourPanel({ data, sejourId, preset, onSaved, openSejour, openC
           </div>
         </div>
       )}
+
+      {original && <ContractBar sejour={original} data={data} />}
 
       {original && (
         <div className="card space-y-3">
@@ -194,11 +206,68 @@ export function SejourPanel({ data, sejourId, preset, onSaved, openSejour, openC
   );
 }
 
+// ---------------------------------------------------------------- contrats : génération et envoi
+type Busy = { key: string; tone?: 'ok' | 'bad'; text?: string };
+
+export function useContractActions() {
+  const [state, setState] = useState<Busy>({ key: '' });
+  const run = async (key: string, label: string, body: Record<string, unknown>, confirmText?: string) => {
+    if (confirmText && !confirm(confirmText)) return;
+    setState({ key });
+    try {
+      const r = await action<{ resultats?: { personne: string; ok: boolean; message: string }[] }>(body);
+      const details = (r.resultats ?? []).map(x => `${x.ok ? '✓' : '✗'} ${x.personne} : ${x.message}`).join(' · ');
+      const bad = (r.resultats ?? []).some(x => !x.ok);
+      setState({ key: '', tone: bad ? 'bad' : 'ok', text: `${label}${details ? ` — ${details}` : ''}` });
+    } catch (e) {
+      setState({ key: '', tone: 'bad', text: e instanceof Error ? e.message : 'Erreur' });
+    }
+  };
+  return { state, run };
+}
+
+function ContractBar({ sejour, data }: { sejour: Rec; data: Data }) {
+  const { state, run } = useContractActions();
+  const comptaIds = people(sejour).map(p => findCompta(data.tables, sejour.id, p.id)?.id).filter(Boolean) as string[];
+  return (
+    <div className="card space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="mr-auto font-semibold">Contrats du séjour</h3>
+        <button type="button" className="btn-light" disabled={!!state.key}
+          onClick={() => run('gen', 'Génération lancée : contrats Word + PDF dans Drive › Contrats d’ici une à deux minutes (rapport : Tableaux › 0_Rapport contrats).', { type: 'contrats', sejourId: sejour.id })}>
+          {state.key === 'gen' ? 'Lancement…' : 'Générer tous les contrats (docx + pdf)'}
+        </button>
+        <button type="button" className="btn-light" disabled={!!state.key || !comptaIds.length}
+          onClick={() => run('mail', 'Envoi par email terminé', { type: 'envoi', mode: 'email', comptaIds }, `Envoyer le contrat PDF par email aux ${comptaIds.length} personne(s) du séjour ?`)}>
+          {state.key === 'mail' ? 'Envoi…' : 'Envoyer tous par email'}
+        </button>
+        <button type="button" className="btn" disabled={!!state.key || !comptaIds.length}
+          onClick={() => run('sign', 'Demandes de signature envoyées (Yousign)', { type: 'envoi', mode: 'signature', comptaIds }, `Envoyer les ${comptaIds.length} contrat(s) en signature électronique (Yousign) ?`)}>
+          {state.key === 'sign' ? 'Envoi…' : 'Tous en signature électronique'}
+        </button>
+      </div>
+      <p className="text-xs text-slate-500">Générez d’abord les contrats (le PDF doit exister dans Drive), puis envoyez-les. Le contrat d’une seule personne se gère sur sa ligne ci-dessous.</p>
+      {state.text && <p className={`rounded-md px-3 py-2 text-sm ${state.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-700'}`}>{state.text}</p>}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- création : choix par personne
-function PlanRow({ data, sejour, clientId, role, client, value, onChange }: {
-  data: Data; sejour: Rec; clientId: string; role: Role; client?: Rec; value: Plan; onChange: (v: Plan) => void;
+function PlanRow({ data, sejour, clientId, role, client, value, onChange, allPlans }: {
+  data: Data; sejour: Rec; clientId: string; role: Role; client?: Rec; value: Plan; onChange: (v: Plan) => void; allPlans: Record<string, Plan>;
 }) {
-  const options = useResourceOptions(data, sejour, clientId);
+  // Choix déjà faits pour les AUTRES personnes du formulaire : déduits des disponibilités
+  const planned = useMemo(() => {
+    const out: Planned = {};
+    const add = (k: AssocKind | 'materiel', id: string) => { if (id) ((out[k] ??= {})[id] = (out[k]![id] ?? 0) + 1); };
+    for (const [pid, pl] of Object.entries(allPlans)) {
+      if (pid === clientId) continue;
+      KINDS.forEach(k => add(k, pl[k]));
+      pl.materiel.forEach(m => add('materiel', m));
+    }
+    return out;
+  }, [allPlans, clientId]);
+  const options = useResourceOptions(data, sejour, clientId, planned);
   const hasDates = !!sejour['Date de début'] && !!sejour['Date de fin'];
   return (
     <div className="rounded-md border border-slate-200 p-3">
@@ -256,11 +325,13 @@ function PersonRow({ data, sejour, clientId, role, client, onSaved, openClient }
   });
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
+  const [ok, setOk] = useState('');
   const set = (k: string) => (v: unknown) => setForm(f => ({ ...f, [k]: v }));
   const cc = choices['Comptabilité'] ?? {};
 
   async function run(key: string, fn: () => Promise<void>) {
     setErr('');
+    setOk('');
     setBusy(key);
     try {
       await fn();
@@ -280,6 +351,7 @@ function PersonRow({ data, sejour, clientId, role, client, onSaved, openClient }
     const rec = await saveRecord('Comptabilité', fields, compta?.id);
     onSaved('Comptabilité', rec);
     setForm({ ...rec });
+    setOk(`Compta enregistrée à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}.`);
   });
 
   const saveAssoc = (kind: AssocKind, value: string) => run(kind, async () => {
@@ -302,6 +374,8 @@ function PersonRow({ data, sejour, clientId, role, client, onSaved, openClient }
   const options = useResourceOptions(data, sejour, clientId);
   const current = (kind: AssocKind) => first(findAssoc(tables, kind, sejour.id, clientId)?.[ASSOC[kind].res]) ?? '';
   const signed = !!compta?.['Contrat signé'];
+  const contrat = useContractActions();
+  const sigStatus = txt(compta?.['Signature statut']);
 
   return (
     <div className="rounded-md border border-slate-200">
@@ -310,9 +384,29 @@ function PersonRow({ data, sejour, clientId, role, client, onSaved, openClient }
         <span className="text-xs text-slate-500">{role}</span>
         <Pill tone={compta ? 'ok' : 'bad'}>{compta ? 'Compta' : 'Sans compta'}</Pill>
         <Pill tone={signed ? 'ok' : 'warn'}>{signed ? `Signé ${frDate(compta?.['Contrat signé'])}` : 'Contrat non signé'}</Pill>
+        {sigStatus && !signed && <Pill tone={sigStatus === 'Erreur' || sigStatus === 'Refusé' ? 'bad' : 'info'}>{sigStatus}</Pill>}
         {compta && <span className="text-xs text-slate-600">Tarif {euro(num(compta['Tarif individuel']))} · TotalAcompte {euro(totalAcompte(compta))}</span>}
-        <button type="button" className="btn-light ml-auto" onClick={() => setOpen(o => !o)}>{open ? 'Fermer' : 'Compta & suivi'}</button>
+        <div className="ml-auto flex flex-wrap gap-1">
+          <button type="button" className="btn-light" disabled={!!contrat.state.key}
+            onClick={() => contrat.run('gen', 'Génération lancée (docx + pdf dans Drive d’ici une minute).', { type: 'contrats', sejourId: sejour.id, clientId })}>
+            {contrat.state.key === 'gen' ? '…' : 'Contrat'}
+          </button>
+          {compta && (
+            <>
+              <button type="button" className="btn-light" disabled={!!contrat.state.key}
+                onClick={() => contrat.run('mail', 'Envoyé', { type: 'envoi', mode: 'email', comptaIds: [compta.id] }, `Envoyer le contrat PDF par email à ${clientName(client)} ?`)}>
+                {contrat.state.key === 'mail' ? '…' : 'Email'}
+              </button>
+              <button type="button" className="btn-light" disabled={!!contrat.state.key}
+                onClick={() => contrat.run('sign', 'Signature demandée', { type: 'envoi', mode: 'signature', comptaIds: [compta.id] }, `Envoyer le contrat de ${clientName(client)} en signature électronique ?`)}>
+                {contrat.state.key === 'sign' ? '…' : 'Signature'}
+              </button>
+            </>
+          )}
+          <button type="button" className="btn-light" onClick={() => setOpen(o => !o)}>{open ? 'Fermer' : 'Compta & suivi'}</button>
+        </div>
       </div>
+      {contrat.state.text && <p className={`mx-3 mb-2 rounded-md px-3 py-1.5 text-xs ${contrat.state.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-700'}`}>{contrat.state.text}</p>}
       <div className="grid gap-3 border-t border-slate-100 p-3 sm:grid-cols-4">
         {KINDS.map(kind => (
           <Field key={kind} label={KIND_LABEL[kind] + (busy === kind ? ' (enregistrement…)' : '')}>
@@ -328,7 +422,7 @@ function PersonRow({ data, sejour, clientId, role, client, onSaved, openClient }
           <div className="grid gap-3 sm:grid-cols-4">
             <Field label="Type"><Select value={form.Type} onChange={set('Type')} options={cc.Type ?? []} /></Field>
             <Field label="Formule"><Select value={form.Formule} onChange={set('Formule')} options={cc.Formule ?? choices['Séjour']?.Formule ?? []} /></Field>
-            <Field label="Tarif individuel (€)"><TextInput type="number" min={0} value={form['Tarif individuel']} onChange={set('Tarif individuel')} /></Field>
+            <Field label="Tarif individuel (€)"><TextInput type="number" min={0} step="0.01" value={form['Tarif individuel']} onChange={set('Tarif individuel')} /></Field>
             <div className="text-xs text-slate-600">
               <span className="label">Montants calculés (Airtable)</span>
               Acompte 1 : {euro(num(compta?.Montant_acompte_1))}<br />Acompte 2 : {euro(num(compta?.Montant_acompte_2))}<br />Solde : {euro(num(compta?.Montant_solde))}
@@ -346,7 +440,8 @@ function PersonRow({ data, sejour, clientId, role, client, onSaved, openClient }
             ))}
           </div>
           <p className="text-xs text-slate-500">Un acompte compte dans TotalAcompte seulement si sa date de versement est remplie. Les montants sont recalculés par Airtable après enregistrement.</p>
-          <div className="flex justify-end">
+          <div className="flex items-center justify-end gap-3">
+            {ok && <span className="text-sm text-emerald-700">{ok}</span>}
             <button type="button" className="btn" disabled={busy === 'compta'} onClick={saveCompta}>{busy === 'compta' ? 'Enregistrement…' : compta ? 'Mettre à jour la compta' : 'Créer la ligne compta'}</button>
           </div>
         </div>
@@ -486,7 +581,11 @@ function TrajetEditor({ data, sejour, trajet, onSaved, onCancel }: {
 }
 
 // ---------------------------------------------------------------- disponibilités sur les dates du séjour
-function useResourceOptions(data: Data, sejour: Rec, clientId: string) {
+// Places prises = somme des clients des liaisons actives dont le séjour chevauche la période
+// (une liaison à 3 clients occupe 3 lits), + les choix pas encore enregistrés du formulaire en cours (planned).
+type Planned = Partial<Record<AssocKind | 'materiel', Record<string, number>>>;
+
+function useResourceOptions(data: Data, sejour: Rec, clientId: string, planned: Planned = {}) {
   const { tables } = data;
   return useMemo(() => {
     const sejours = byId(tables['Séjour']);
@@ -499,6 +598,8 @@ function useResourceOptions(data: Data, sejour: Rec, clientId: string) {
       (tables[table] ?? []).filter(r => isActive(r) && ids(r[resField]).includes(resId) && overlapping(r)
         && !(ids(r.ID_Séjour).includes(sejour.id) && ids(r[clientField]).includes(clientId)));
     const holders = (kind: AssocKind, resId: string) => holdersIn(ASSOC[kind].table, ASSOC[kind].client, ASSOC[kind].res, resId);
+    const taken = (kind: AssocKind, resId: string) =>
+      holders(kind, resId).reduce((n, r) => n + occupants(r, ASSOC[kind].client), 0) + (planned[kind]?.[resId] ?? 0);
     const chefOf = (r: Rec) => clientName(clients[first(sejours[first(r.ID_Séjour) ?? '']?.['Chef de groupe']) ?? '']);
     const others = (h: Rec[]) => {
       const names = [...new Set(h.filter(r => !ids(r.ID_Séjour).includes(sejour.id)).map(chefOf))];
@@ -509,23 +610,33 @@ function useResourceOptions(data: Data, sejour: Rec, clientId: string) {
       .sort((a, b) => txt(a['Résidence']).localeCompare(txt(b['Résidence'])) || txt(a.Titre).localeCompare(txt(b.Titre), 'fr', { numeric: true }))
       .map(l => {
         const lits = num(l['Nombre de lits']);
-        const pris = holders('logement', l.id).length;
-        return { value: l.id, label: `${txt(l['Résidence'])} · ${txt(l.Titre)} — ${pris}/${lits} lit(s) pris`, disabled: lits > 0 && pris >= lits };
+        const pris = taken('logement', l.id);
+        const libre = lits - pris;
+        return {
+          value: l.id,
+          label: `${txt(l['Résidence'])} · ${txt(l.Titre)} — ${lits ? `${Math.max(libre, 0)} lit(s) libre(s) sur ${lits}` : `${pris} occupant(s)`}${libre < 0 ? ' ⚠ surbooking' : ''}`,
+          disabled: lits > 0 && pris >= lits,
+        };
       });
     const guide = (tables.Staff ?? [])
       .filter(s => (Array.isArray(s.Profil) ? s.Profil : []).includes('Guide'))
-      .map(s => ({ value: s.id, label: `${txt(s['Prénom NOM'])}${others(holders('guide', s.id))}` }));
-    const bateau = (tables.Bateau ?? []).map(b => ({
-      value: b.id,
-      label: `${txt(b['Nom du bateau'])} (${txt(b['Type de bateau'])})${b['Disponible pour la saison'] ? '' : ' — indisponible cette saison'}${others(holders('bateau', b.id))}`,
-    }));
+      .map(s => ({ value: s.id, label: `${txt(s['Prénom NOM'])}${others(holders('guide', s.id))}${planned.guide?.[s.id] ? ` — choisi pour ${planned.guide[s.id]} autre(s) ici` : ''}` }));
+    const bateau = (tables.Bateau ?? []).map(b => {
+      const cap = num(b['Capacité maximale (personnes)']);
+      const pris = taken('bateau', b.id);
+      return {
+        value: b.id,
+        label: `${txt(b['Nom du bateau'])} (${txt(b['Type de bateau'])})${cap ? ` — ${Math.max(cap - pris, 0)} place(s) libre(s) sur ${cap}` : pris ? ` — ${pris} personne(s)` : ''}${b['Disponible pour la saison'] ? '' : ' — indisponible cette saison'}${others(holders('bateau', b.id))}`,
+        disabled: cap > 0 && pris >= cap,
+      };
+    });
     const materiel = [...(tables.Materiel ?? [])]
       .sort((a, b) => materielLabel(a).localeCompare(materielLabel(b), 'fr', { numeric: true }))
       .map(m => {
         const stock = num(m.Stock) || 1;
-        const pris = holdersIn(MAT.table, MAT.client, MAT.res, m.id).length;
-        return { value: m.id, label: `${materielLabel(m)} — ${pris}/${stock} pris`, disabled: pris >= stock };
+        const pris = holdersIn(MAT.table, MAT.client, MAT.res, m.id).length + (planned.materiel?.[m.id] ?? 0);
+        return { value: m.id, label: `${materielLabel(m)} — ${Math.max(stock - pris, 0)} dispo sur ${stock}`, disabled: pris >= stock };
       });
     return { logement, guide, bateau, materiel };
-  }, [tables, sejour, clientId]);
+  }, [tables, sejour, clientId, planned]);
 }

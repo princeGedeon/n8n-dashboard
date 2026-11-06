@@ -1,7 +1,7 @@
 import type { APIRoute } from 'astro';
 import { env } from '../../lib/env';
 import { primaryKey } from '../../lib/fields';
-import { findClientsByEmail, pourcentageForYear, writeRecords, type Rec } from '../../lib/n8n';
+import { notify, q, readTable, writeRecords, type Rec } from '../../lib/n8n';
 import { clientIp, rateLimit } from '../../lib/ratelimit';
 
 const json = (body: unknown, status = 200) =>
@@ -36,28 +36,41 @@ async function verifyTurnstile(token: string, ip: string): Promise<boolean> {
   return data?.success === true;
 }
 
-// Trouve le client par email, sinon le crée. Un client existant n'est jamais modifié :
-// les informations transmises sont recopiées dans les remarques du séjour pour vérification.
-async function findOrCreate(p: Person, source: string): Promise<{ id: string; existing: boolean }> {
+// Contact : retrouvé par email, sinon créé. Un contact existant n'est jamais modifié
+// (les informations saisies sont de toute façon recopiées dans le Prospect).
+async function findOrCreateContact(p: Person, source: string, extra: Record<string, unknown>): Promise<{ id: string; existing: boolean }> {
   if (p.email) {
-    const found = await findClientsByEmail(p.email);
+    const found = await readTable('Contact', `OR(LOWER(TRIM({Email}))=${q(p.email)},LOWER(TRIM({AutreEmail}))=${q(p.email)})`);
     if (found.length) return { id: found[0].id, existing: true };
   }
-  const fields: Record<string, unknown> = {
-    'Clé primaire (Nom + Prénom)': primaryKey(p.nom, p.prenom),
-    Nom: p.nom, Prenom: p.prenom, Email: p.email || null, 'Numéro de téléphone': p.telephone || null,
-    'Régime alimentaire': p.regime || null, Taille: p.taille || null, Moucheur: p.moucheur,
-    Source: source, "Date d'entrée (Client)": new Date().toISOString().slice(0, 10),
-  };
-  Object.assign(fields, { 'Address Line 1': p.adresse || null, 'Postal Code': p.codePostal || null, City: p.ville || null, Country: p.pays || null });
-  const [rec] = await writeRecords('Clients', 'POST', [{ fields }]);
+  const [rec] = await writeRecords('Contact', 'POST', [{ fields: { ...personFields(p), ...extra, Source: source, 'Créé par': 'Formulaire web' } }]);
   return { id: (rec as Rec).id, existing: false };
 }
 
-const describe = (p: Person) =>
-  [`${p.prenom} ${p.nom}`, p.email, p.telephone, p.regime && `régime : ${p.regime}`, p.taille && `taille : ${p.taille}`,
-    p.moucheur && 'moucheur', p.adresse && `adresse : ${[p.adresse, p.codePostal, p.ville, p.pays].filter(Boolean).join(' ')}`]
-    .filter(Boolean).join(' · ');
+const personFields = (p: Person) => ({
+  Nom: p.nom, Prenom: p.prenom, Email: p.email || null, 'Numéro de téléphone': p.telephone || null,
+  'Régime alimentaire': p.regime || null, Taille: p.taille || null, Moucheur: p.moucheur,
+  'Address Line 1': p.adresse || null, 'Postal Code': p.codePostal || null, City: p.ville || null, Country: p.pays || null,
+});
+
+const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+const frDate = (iso: string) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : '?');
+
+function notificationHtml(p: Person, s: { debut: string; fin: string; formule: string; nbPecheurs: number; nbAccompagnants: number; attentes: string; vols: string }, source: string, contactExisting: boolean, link: string) {
+  const rows: [string, string][] = [
+    ['Nom', `${p.prenom} ${p.nom.toUpperCase()}`], ['Email', p.email], ['Téléphone', p.telephone],
+    ['Adresse', [p.adresse, p.codePostal, p.ville, p.pays].filter(Boolean).join(' ')],
+    ['Séjour souhaité', `du ${frDate(s.debut)} au ${frDate(s.fin)}`], ['Formule', s.formule || 'à définir'],
+    ['Groupe', `${s.nbPecheurs} pêcheur(s)${s.nbAccompagnants ? ` + ${s.nbAccompagnants} accompagnant(s)` : ''}`],
+    ['Régime / taille', [p.regime, p.taille].filter(Boolean).join(' · ')], ['Moucheur', p.moucheur ? 'oui' : 'non'],
+    ['Attentes', s.attentes], ['Vols', s.vols], ['Source', source],
+    ['Contact', contactExisting ? 'déjà connu (fiche non modifiée)' : 'nouveau contact créé'],
+  ];
+  return `<div style="font-family:Arial,sans-serif;font-size:14px;color:#1e293b">
+<h2 style="color:#075985">Nouvelle demande de séjour</h2>
+<table cellpadding="6" style="border-collapse:collapse">${rows.filter(([, v]) => v).map(([k, v]) => `<tr><td style="color:#64748b;vertical-align:top">${esc(k)}</td><td style="white-space:pre-wrap">${esc(v)}</td></tr>`).join('')}</table>
+<p>Le prospect est dans Airtable (statut « Nouveau »).${link ? ` <a href="${esc(link)}">Ouvrir l’espace admin</a> › Prospects pour le convertir en séjour.` : ''}</p></div>`;
+}
 
 export const POST: APIRoute = async ({ request, clientAddress }) => {
   const ip = clientIp(request, clientAddress);
@@ -79,6 +92,7 @@ export const POST: APIRoute = async ({ request, clientAddress }) => {
     nbPecheurs: Math.max(1, Math.min(30, Number(b?.sejour?.nbPecheurs) || 1)),
     attentes: long(b?.sejour?.attentes), vols: long(b?.sejour?.vols, 1000),
     nbAccompagnants: Math.max(0, Math.min(30, Number(b?.sejour?.nbAccompagnants) || 0)),
+    source: s(b?.sejour?.source, 80),
   };
 
   const errors: string[] = [];
@@ -91,26 +105,43 @@ export const POST: APIRoute = async ({ request, clientAddress }) => {
   if (errors.length) return json({ error: errors.join('. ') + '.' }, 400);
 
   try {
-    // Seul le client est créé ; les autres membres du groupe sont ajoutés par l'admin
-    const chef = await findOrCreate(main, 'Formulaire web');
-    const notes: string[] = [`Demande reçue via le formulaire web le ${new Date().toLocaleDateString('fr-FR')}.`];
-    if (chef.existing) notes.push(`Client déjà connu — infos saisies à vérifier : ${describe(main)}`);
-    notes.push(`Groupe annoncé : ${sejour.nbPecheurs} pêcheur(s)${sejour.nbAccompagnants ? ` + ${sejour.nbAccompagnants} accompagnant(s)` : ''} — participants à ajouter par l'admin.`);
-    if (sejour.vols) notes.push(`Vols : ${sejour.vols}`);
-
-    const fields: Record<string, unknown> = {
-      'Date de début': sejour.debut,
-      'Date de fin': sejour.fin,
-      Status: 'Attente',
-      'Chef de groupe': [chef.id],
+    // Le formulaire ne crée plus de séjour : Contact (+ source) puis Prospect, et Aude est prévenue par email.
+    // Le séjour est créé ensuite depuis l'espace admin (Prospects › Convertir en séjour).
+    const source = ['Formulaire web', sejour.source].filter(Boolean).join(' · ');
+    const periode = `${frDate(sejour.debut)} → ${frDate(sejour.fin)}`;
+    const common = {
+      'Formule du séjour': sejour.formule || null,
       'Nombre de pêcheurs': sejour.nbPecheurs,
-      'Brief attentes': sejour.attentes || null,
-      Remarques: notes.join('\n'),
+      nbreAccompagnant: sejour.nbAccompagnants,
+      'Période souhaitée': periode,
     };
-    if (sejour.formule) fields.Formule = sejour.formule;
-    const pct = await pourcentageForYear(sejour.debut);
-    if (pct) fields.Pourcentage_acompte_annee = pct;
-    await writeRecords('Séjour', 'POST', [{ fields }]);
+    const contact = await findOrCreateContact(main, source, common);
+    await writeRecords('Prospects', 'POST', [{
+      fields: {
+        'Clé primaire (Nom + Prénom)': primaryKey(main.nom, main.prenom),
+        ...personFields(main),
+        ...common,
+        Source: source,
+        'Date début souhaitée': sejour.debut,
+        'Date fin souhaitée': sejour.fin,
+        'Statut prospect': 'Nouveau',
+        'Brief attentes': sejour.attentes || null,
+        Vols: sejour.vols || null,
+        'Contact ID': contact.id,
+        "Date d'entrée (Prospect)": new Date().toISOString().slice(0, 10),
+        'Créé par': 'Formulaire web',
+      },
+    }]);
+    const adminUrl = env('PUBLIC_URL') ? `${env('PUBLIC_URL')!.replace(/\/$/, '')}/admin` : new URL('/admin', request.url).toString();
+    try {
+      await notify(
+        `Nouvelle demande : ${main.prenom} ${main.nom.toUpperCase()} · ${periode} · ${sejour.nbPecheurs} pêcheur(s)`,
+        notificationHtml(main, sejour, source, contact.existing, adminUrl),
+      );
+    } catch (e) {
+      // La demande est enregistrée : un échec d'email ne doit pas la faire refuser
+      console.error('Notification prospect :', e instanceof Error ? e.message : e);
+    }
     return json({ ok: true });
   } catch (e) {
     console.error('Formulaire client :', e instanceof Error ? e.message : e);

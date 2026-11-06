@@ -1,5 +1,5 @@
 import { defineMiddleware } from 'astro:middleware';
-import { isValidSession } from './lib/session';
+import { sessionUser } from './lib/session';
 
 const PUBLIC_ADMIN = ['/admin/login', '/api/admin/login'];
 
@@ -24,11 +24,15 @@ export const onRequest = defineMiddleware(async (ctx, next) => {
     return new Response(JSON.stringify({ error: 'Origine refusée' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
   }
 
-  if (isAdminArea && !PUBLIC_ADMIN.includes(pathname) && !isValidSession(ctx.cookies)) {
-    if (pathname.startsWith('/api/')) {
-      return new Response(JSON.stringify({ error: 'Session expirée, reconnectez-vous' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+  if (isAdminArea && !PUBLIC_ADMIN.includes(pathname)) {
+    const user = sessionUser(ctx.cookies);
+    if (!user) {
+      if (pathname.startsWith('/api/')) {
+        return new Response(JSON.stringify({ error: 'Session expirée, reconnectez-vous' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+      }
+      return ctx.redirect('/admin/login');
     }
-    return ctx.redirect('/admin/login');
+    ctx.locals.user = user;
   }
 
   const res = await next();

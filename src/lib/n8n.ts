@@ -33,7 +33,8 @@ export async function readTable(table: string, formula = ''): Promise<Rec[]> {
   return (body?.records ?? []) as Rec[];
 }
 
-const flatten = (r: { id: string; fields?: Record<string, unknown> }): Rec => ({ id: r.id, ...(r.fields ?? {}) });
+// Le vrai id Airtable passe en dernier : certaines tables ont un champ formule « id » qui l'écraserait
+const flatten = (r: { id: string; fields?: Record<string, unknown> }): Rec => ({ ...(r.fields ?? {}), id: r.id });
 
 export async function writeRecords(
   table: string,
@@ -58,19 +59,35 @@ export async function readSchema(): Promise<{ tables: { name: string; fields: { 
   return parse(await fetch(`${base()}/schema`, { headers: keyHeader() }));
 }
 
-export async function checkAdminPassword(password: string): Promise<boolean> {
-  const res = await fetch(`${base()}/login`, {
-    method: 'POST',
-    headers: { Authorization: 'Basic ' + Buffer.from(`admin:${password}`).toString('base64') },
-  });
-  return res.status === 200;
+export type User = { id: string; email: string; nom: string; role: string };
+
+// Compte de la table Utilisateurs (lecture côté serveur uniquement : contient le mot de passe chiffré)
+export async function findUserByEmail(email: string): Promise<Rec | undefined> {
+  const e = normEmail(email);
+  if (!e) return undefined;
+  const rows = await readTable('Utilisateurs', `LOWER(TRIM({Email}))=${q(e)}`);
+  return rows[0];
 }
 
-// Lance la régénération des tableaux Excel (workflow suivi_saison)
-export async function regenerateExcel(annee: string): Promise<void> {
-  const url = `${requireEnv('N8N_URL').replace(/\/$/, '')}/webhook/suivi-saison?annee=${encodeURIComponent(annee)}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new N8nError(`Régénération refusée (${res.status})`);
+// Email de notification (Gmail d'Aude par défaut)
+export async function notify(subject: string, html: string, to?: string): Promise<void> {
+  await parse(
+    await fetch(`${base()}/notify`, {
+      method: 'POST',
+      headers: { ...keyHeader(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject, html, to }),
+    }),
+  );
+}
+
+// Appelle un webhook n8n protégé par la clé serveur (contrats, tableaux, envoi des contrats)
+export async function callWebhook(pathName: string, params: Record<string, string>, body?: unknown): Promise<any> {
+  const url = `${requireEnv('N8N_URL').replace(/\/$/, '')}/webhook/${pathName}?${new URLSearchParams(params)}`;
+  return parse(
+    await fetch(url, body === undefined
+      ? { headers: keyHeader() }
+      : { method: 'POST', headers: { ...keyHeader(), 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+  );
 }
 
 // Échappe une valeur texte pour une formule Airtable entre apostrophes

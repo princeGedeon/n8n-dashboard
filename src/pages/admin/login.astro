@@ -3,7 +3,14 @@ import Base from '../../layouts/Base.astro';
 import { isValidSession } from '../../lib/session';
 if (isValidSession(Astro.cookies)) return Astro.redirect('/admin');
 const e = Astro.url.searchParams.get('e');
-const message = e === '1' ? 'Mot de passe incorrect.' : e === '2' ? 'Trop de tentatives, réessayez dans 15 minutes.' : e === '3' ? 'Service indisponible (n8n), réessayez.' : '';
+const email = Astro.url.searchParams.get('email') ?? '';
+const MESSAGES: Record<string, string> = {
+  '1': 'Email ou mot de passe incorrect.',
+  '2': 'Trop de tentatives échouées, réessayez dans 15 minutes.',
+  '3': 'Service indisponible (n8n / Airtable), réessayez dans un instant.',
+  '4': 'Ce compte est désactivé. Contactez l’administrateur.',
+};
+const message = e ? MESSAGES[e] ?? '' : '';
 ---
 <Base title="Connexion — Admin" noindex>
   <main class="flex min-h-screen items-center justify-center p-4">
@@ -14,8 +21,12 @@ const message = e === '1' ? 'Mot de passe incorrect.' : e === '2' ? 'Trop de ten
       </div>
       {message && <p class="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{message}</p>}
       <div>
+        <label class="label" for="email">Email</label>
+        <input class="input" id="email" name="email" type="email" autocomplete="username" required autofocus={!email} value={email} />
+      </div>
+      <div>
         <label class="label" for="password">Mot de passe</label>
-        <input class="input" id="password" name="password" type="password" autocomplete="current-password" required autofocus />
+        <input class="input" id="password" name="password" type="password" autocomplete="current-password" required autofocus={!!email} />
       </div>
       <button class="btn w-full" type="submit">Se connecter</button>
     </form>

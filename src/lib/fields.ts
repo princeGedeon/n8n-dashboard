@@ -26,18 +26,30 @@ export const WRITABLE: Record<string, string[]> = {
     'Date du trajet départ', 'Date du trajet arrivée', 'Aéroport de départ/arrivée', 'Chauffeurs / Staff', 'Clients',
     'Séjour', 'Remarques', 'Véhicules utilisés',
   ],
+  Prospects: ['Statut prospect', 'Traité par', 'Séjour créé', 'Notes relance', 'Commentaire qualification (Prospect)'],
 };
+
+// Tables avec les champs « Créé par » / « Modifié par » / « Date modification » remplis automatiquement
+export const AUDITED = new Set([...Object.keys(WRITABLE), 'Contact']);
+
+// Champs Prospects envoyés au navigateur
+export const PROSPECT_FIELDS = [
+  'Clé primaire (Nom + Prénom)', 'Nom', 'Prenom', 'Email', 'Numéro de téléphone', 'Régime alimentaire', 'Taille', 'Moucheur',
+  'Address Line 1', 'Postal Code', 'City', 'Country', 'Source', 'Formule du séjour', 'Nombre de pêcheurs', 'nbreAccompagnant',
+  'Période souhaitée', 'Date début souhaitée', 'Date fin souhaitée', 'Statut prospect', 'Brief attentes', 'Vols', 'Traité par',
+  'Contact ID', 'Séjour créé', "Date d'entrée (Prospect)", 'Créé par', 'Notes relance',
+];
 
 // Champs Clients envoyés au navigateur (évite de transférer les 64 colonnes)
 export const CLIENT_FIELDS = [
   'Clé primaire (Nom + Prénom)', 'Nom', 'Prenom', 'Email', 'AutreEmail', 'Numéro de téléphone', 'Régime alimentaire',
   'Taille', 'Moucheur', 'Apporteur', 'Source', 'Address Line 1', 'Address Line 2', 'City', 'Postal Code', 'Country',
-  'Company', 'Notes relance', "Date d'entrée (Client)",
+  'Company', 'Notes relance', "Date d'entrée (Client)", 'Créé par', 'Modifié par',
 ];
 
 export const ADMIN_TABLES = [
   'Clients', 'Séjour', 'Comptabilité', 'Logement', 'Association_Logement', 'Staff', 'Association_Guides', 'Bateau',
-  'Association_bateau', 'Materiel', 'Association_Materiel', 'Trajet',
+  'Association_bateau', 'Materiel', 'Association_Materiel', 'Trajet', 'Prospects',
 ] as const;
 
 export const primaryKey = (nom: unknown, prenom: unknown) =>

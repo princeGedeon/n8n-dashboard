@@ -2,7 +2,7 @@
 export type Rec = { id: string; [field: string]: any };
 export type Tables = Record<string, Rec[]>;
 export type Choices = Record<string, Record<string, string[]>>;
-export type Data = { tables: Tables; choices: Choices; loadedAt: string };
+export type Data = { tables: Tables; choices: Choices; loadedAt: string; user?: { email: string; nom: string; role: string } };
 
 export class ApiError extends Error {
   constructor(message: string, public status: number, public data: any) {
@@ -41,7 +41,8 @@ export const frDate = (iso: unknown) => {
   const s = txt(iso).slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}` : '—';
 };
-export const euro = (n: number) => n.toLocaleString('fr-FR', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
+// Montants au centime près, comme dans Airtable (1 234,50 €)
+export const euro = (n: number) => n.toLocaleString('fr-FR', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export type Role = 'Chef de groupe' | 'Participant' | 'Accompagnant';
 export function people(s: Rec): { id: string; role: Role }[] {
@@ -92,3 +93,8 @@ export function createAssoc(kind: AssocKind | 'materiel', sejourId: string, clie
 // TotalAcompte = acomptes dont la date de versement est renseignée
 export const totalAcompte = (c?: Rec) =>
   c ? (c['Date_acompte 1'] ? num(c.Montant_acompte_1) : 0) + (c['Date_acompte 2'] ? num(c.Montant_acompte_2) : 0) : 0;
+
+// Nombre de clients occupant une liaison (une liaison peut regrouper 2 ou 3 clients : elle compte pour autant de places)
+export const occupants = (r: Rec, clientField: string) => Math.max(ids(r[clientField]).length, 1);
+
+export const action = <T = any>(body: Record<string, unknown>) => api<T>('/api/admin/action', body);

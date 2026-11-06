@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { primaryKey, WRITABLE } from '../../../lib/fields';
+import { AUDITED, primaryKey, WRITABLE } from '../../../lib/fields';
 import { findClientsByEmail, N8nError, pourcentageForYear, writeRecords } from '../../../lib/n8n';
 
 const json = (body: unknown, status = 200) =>
@@ -7,7 +7,7 @@ const json = (body: unknown, status = 200) =>
 
 // Enregistre une ligne : { table, id?, fields, force? }
 // id absent → création ; id présent → modification. Seuls les champs autorisés sont transmis.
-export const POST: APIRoute = async ({ request }) => {
+export const POST: APIRoute = async ({ request, locals }) => {
   let body: any;
   try {
     body = await request.json();
@@ -43,7 +43,14 @@ export const POST: APIRoute = async ({ request }) => {
       const pct = await pourcentageForYear(fields['Date de début']);
       if (pct) fields.Pourcentage_acompte_annee = pct;
     }
+    if (AUDITED.has(table) && locals.user) {
+      const who = `${locals.user.nom} <${locals.user.email}>`;
+      fields['Modifié par'] = who;
+      fields['Date modification'] = new Date().toISOString();
+      if (!id) fields['Créé par'] = who;
+    }
     const [record] = await writeRecords(table, id ? 'PATCH' : 'POST', [id ? { id, fields } : { fields }]);
+    if (!record?.id) return json({ error: 'Airtable n’a pas renvoyé la ligne enregistrée, actualisez la page' }, 502);
     return json({ record });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : 'Erreur' }, e instanceof N8nError ? e.status : 500);
