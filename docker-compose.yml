@@ -1,0 +1,9 @@
+services:
+  formulaires:
+    build: .
+    container_name: formulaires
+    restart: unless-stopped
+    env_file: .env
+    # Accessible uniquement depuis le serveur : le reverse proxy (Traefik, Caddy, Nginx) publie le HTTPS
+    ports:
+      - "127.0.0.1:4321:4321"

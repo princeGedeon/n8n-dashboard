@@ -1,0 +1,30 @@
+---
+import Base from '../layouts/Base.astro';
+import ClientForm from '../components/client/ClientForm';
+import { env } from '../lib/env';
+import { readSchema } from '../lib/n8n';
+
+// Liste des formules lue dans Airtable (mise en cache 10 min, repli sur F1–F5 si n8n ne répond pas)
+const g = globalThis as unknown as { __formules?: { at: number; list: string[] } };
+let formules = ['F1', 'F2', 'F3', 'F4', 'F5'];
+if (g.__formules && Date.now() - g.__formules.at < 600_000) formules = g.__formules.list;
+else {
+  try {
+    const schema = await readSchema();
+    const f = schema.tables.find(t => t.name === 'Séjour')?.fields.find(x => x.name === 'Formule');
+    if (f?.choices?.length) formules = f.choices;
+    g.__formules = { at: Date.now(), list: formules };
+  } catch {}
+}
+const siteKey = env('TURNSTILE_SITE_KEY');
+---
+<Base title="Demande de réservation">
+  {siteKey && <script is:inline slot="head" src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>}
+  <main class="mx-auto max-w-3xl p-4 sm:p-8">
+    <header class="mb-6">
+      <h1 class="text-2xl font-semibold text-slate-900">Demande de réservation</h1>
+      <p class="mt-1 text-sm text-slate-600">Renseignez vos informations et celles de votre groupe. Nous revenons vers vous pour confirmer le séjour.</p>
+    </header>
+    <ClientForm client:load formules={formules} turnstileSiteKey={siteKey} />
+  </main>
+</Base>
